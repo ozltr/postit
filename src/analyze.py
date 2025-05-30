@@ -1,16 +1,19 @@
-import os
-import pprint
-from typing import List
-import glob
-import polars
+import polars as pl
 import plotly.express as px
 import plotly.subplots
-import plotly.graph_objects
+import plotly.graph_objects as go
+
+import os
+from pprint import pprint
+from typing import List
+import glob
+import time
+import datetime
 
 # Define the directory name (adjust if needed)
 DATA_DIR = "../history"
 
-def scrape_csv_data(file_path: str) -> List[str]:
+def scrape_csv_data(file_path: str) -> pl.DataFrame:
     """
     Returns a list of all files matching the given glob pattern.
     """
@@ -23,36 +26,28 @@ def scrape_csv_data(file_path: str) -> List[str]:
         timestamp_str = filename.replace(".csv", "")
 
         # Read CSV and add a 'Timestamp' column with the extracted date
-        df = polars.read_csv(file_path).with_columns([
-            polars.lit(timestamp_str).alias("Timestamp")
+        df = pl.read_csv(file_path).with_columns([
+            pl.lit(timestamp_str).alias("Timestamp")
         ])
         dfs.append(df)
 
     # Concatenate all into a single DataFrame
-    combined_df = polars.concat(dfs)
+    combined_df = pl.concat(dfs)
     combined_df = pre_process_data(combined_df)
 
     return combined_df
 
-def pre_process_data(df):
+def pre_process_data(df) -> pl.DataFrame:
     """
     Pre-process the DataFrame
     """
-    # We don't need the 'Owned?' and 'Top?' columns
-    df = df.drop(["Owned?", "Top?"])
 
-    # Convert 'Timestamp' to datetime
-    df = df.with_columns([
-        polars.col("Timestamp").str.strptime(polars.Datetime, "%Y-%m-%d-%H-%M")
-    ])
+    df = df.filter(pl.col("Name") != "Felcloth")
+    df = df.filter(pl.col("Name") != "Firebloom")
 
-    # Convert 'Price' to float
-    df = df.with_columns([
-        (polars.col("Price") / 10_000)
-    ])
     return df
 
-def weekly_overview(df: polars.DataFrame) -> plotly.graph_objects.Figure:
+def weekly_overview(df: pl.DataFrame) -> go.Figure:
     """
     Create a weekly overview of the data.
     """
@@ -61,19 +56,19 @@ def weekly_overview(df: polars.DataFrame) -> plotly.graph_objects.Figure:
 
     # Append an 'Hour' column for heatmap
     df = df.with_columns([
-        polars.col("Timestamp").dt.hour().alias("hour")
+        pl.col("Timestamp").dt.hour().alias("hour")
     ])
 
     # Append a weekday column for heatmap
     df = df.with_columns([
-        polars.col("Timestamp").dt.weekday().alias("weekday")
+        pl.col("Timestamp").dt.weekday().alias("weekday")
     ])
 
     # Group by hour and weekday, then do a count on occurances
     df = df.select(["hour", "weekday"])
     df = (
         df.group_by(["weekday", "hour"])
-        .agg(polars.len().alias("count"))
+        .agg(pl.len().alias("count"))
         .sort(["weekday", "hour"])
     )
 
@@ -116,55 +111,137 @@ def weekly_overview(df: polars.DataFrame) -> plotly.graph_objects.Figure:
     return fig
 
 
-def price_history(df: polars.DataFrame) -> polars.DataFrame:
+def price_supply_history_filter_hours(df: pl.DataFrame, hours: int = 24):
+    """
+    Create a price and supply history graph
+    """
+
+    filter_timestamp = datetime.datetime.now() - datetime.timedelta(hours=hours)
+
+    df = df.filter(
+        pl.col('Timestamp') >= pl.lit(filter_timestamp)
+    )
+
+    # Create the figure with secondary y-axis
+    fig = plotly.subplots.make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Add traces for price
+    for herb_name in df["Name"].unique():
+        herb_data_filtered = df.filter(pl.col("Name") == herb_name)
+        fig.add_trace(
+            go.Scatter(
+                x=herb_data_filtered["Timestamp"], 
+                y=herb_data_filtered["Price"], 
+                name=f"4-{herb_name} Price",
+                legendgroup="price_graph_4",  # group for graph 4
+                legendgrouptitle=dict(text="Graph 4: Price"),
+                showlegend=True
+            ), 
+            secondary_y=False
+        )
+
+    # Add traces for supply
+    for herb_name in df["Name"].unique():
+            herb_data_filtered = df.filter(pl.col("Name") == herb_name)
+            fig.add_trace(
+                go.Scatter(
+                    x=herb_data_filtered["Timestamp"], 
+                    y=herb_data_filtered["Available"], 
+                    name=f"4-{herb_name} Supply",
+                    legendgroup="price_graph_4",  # group for graph 4
+                    legendgrouptitle=dict(text="Graph 4: Supply"),
+                    showlegend=True
+                ), 
+                secondary_y=True
+            )
+
+    # Set axis titles
+    fig.update_layout(
+        title_text="Price and Supply Over Time",
+        xaxis_title="Timestamp",
+        yaxis_title="Price",
+        yaxis2_title="Available Supply",
+        yaxis2=dict(overlaying="y", side="right")  # Ensure the supply axis is on the right
+    )
+
+    return fig
+
+
+def price_history(df: pl.DataFrame):
     """
     Create a price history graph
     """
 
-    price_df = df.to_pandas()
+    fig = plotly.subplots.make_subplots()
 
-    # Plot line chart
-    fig = px.line(
-        price_df,
-        x="Timestamp",
-        y="Price",
-        color="Name",  # Each herb gets its own line
-        title="Herb Prices Over Time"
-    )
+    # Add traces for price
+    for herb_name in df["Name"].unique():
+        herb_data_filtered = df.filter(pl.col("Name") == herb_name)
+        fig.add_trace(
+            go.Scatter(
+                x=herb_data_filtered["Timestamp"], 
+                y=herb_data_filtered["Price"], 
+                name=f"2-{herb_name} Price",
+                legendgroup="price_graph_2",  # group for graph 2
+                legendgrouptitle=dict(text="Graph 2: Price History"),
+                showlegend=True
+            )
+        )
     
     return fig
 
 
+def price_history_filter_hours(df: pl.DataFrame, hours: int = 24):
+    """
+    Create a price history graph for last 24h
+    """
 
-def show_plots(weekly_overview_fig: plotly.graph_objects.Figure, price_history_fig: plotly.graph_objects.Figure):
+    filter_timestamp = datetime.datetime.now() - datetime.timedelta(hours=hours)
+
+    df = df.filter(
+        pl.col('Timestamp') >= pl.lit(filter_timestamp)
+    )
+
+    fig = plotly.subplots.make_subplots()
+
+    # Add traces for price
+    for herb_name in df["Name"].unique():
+        herb_data_filtered = df.filter(pl.col("Name") == herb_name)
+        fig.add_trace(
+            go.Scatter(
+                x=herb_data_filtered["Timestamp"], 
+                y=herb_data_filtered["Price"], 
+                name=f"3-{herb_name} Price",
+                legendgroup="price_graph_3",  # group for graph 3
+                legendgrouptitle=dict(text="Graph 3: Price Periodically"),
+                showlegend=True
+            )
+        )
+    
+    return fig
+
+
+def show_plots(plots = List[tuple[str, go.Figure]]):
     """
     Show the plots in the figure.
     """
     # Create subplot layout (e.g., 1 row, 2 columns)
-    fig = plotly.subplots.make_subplots(rows=2, cols=1, subplot_titles=["Data ingestion", "Price History", "Avarage Price Weekly"])
+    fig = plotly.subplots.make_subplots(rows=4, cols=1, subplot_titles=[plot[0] for plot in plots])
 
-    # First plot
-    for trace in weekly_overview_fig.data:
-        trace.update(
-            colorscale='Spectral',
-        )
-        fig.add_trace(trace, row=1, col=1) 
-    
-    # Second plot
-    [fig.add_trace(trace, row=2, col=1) for trace in price_history_fig.data]
-
-    # Third plot
+    for idx, graph_object in enumerate([plot[1] for plot in plots]):
+        for trace in graph_object.data:
+            fig.add_trace(trace, row=idx+1, col=1)
 
     fig.update_layout(
-        height=2000,
+        height=3500,
         width=1000,
         title="Postit Overview",
         title_x=0.5,
         legend=dict(
             itemsizing="constant",
             orientation="h",
-            x=0.5,
-            y=0.3,   
+            # x=0.5,
+            # y=0.3,   
             xanchor="center",
             yanchor="bottom",
         ),
@@ -181,15 +258,26 @@ def show_plots(weekly_overview_fig: plotly.graph_objects.Figure, price_history_f
 
 if __name__ == "__main__":
 
-    data_frames = scrape_csv_data('history/*.csv')
+    # data_frames = scrape_csv_data('history/*.csv')
+    data_frames = pl.read_parquet('parquets/prices.parquet')
+    data_frames = pre_process_data(data_frames)
 
-    # Generate graph figures
+    # Generate figures
     weekly_overview_fig = weekly_overview(data_frames)
     price_history_fig = price_history(data_frames)
 
-    # pprint.pprint(data_frames.select("Name").unique())
+    # Generate figure with time interval
+    time_interval = 8
+    price_history_filtered_fig = price_history_filter_hours(data_frames, hours=time_interval)
+    price_supply_history_filter_hours_fig = price_supply_history_filter_hours(data_frames, hours=time_interval)
+
+    # Bundle name and figure
+    plots: List[tuple[str, go.Figure]] = [
+        ("Data ingestion Coverage", weekly_overview_fig),
+        ("Price History", price_history_fig),
+        (f"Price History {time_interval}h", price_history_filtered_fig),
+        ("Price and Supply History", price_supply_history_filter_hours_fig)
+    ]
 
     # Show the plots
-    show_plots(weekly_overview_fig, price_history_fig)
-
-    # pprint.pprint(data_frames)
+    show_plots(plots)

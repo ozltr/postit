@@ -30,6 +30,7 @@ pip install -r requirements.txt # install dependencies
 ```
 ### Limitations
 
+- World of Warcraft Classic addon `auctionator` is a must
 - Recommended to run `etl.py` at least a few times a day for a week in order to find trends.
 - Only tested with Orgrimmar Auction House, to change this you need to adjust the auctioneer variables in [etl.py](./src/etl.py#L31-L33)
 

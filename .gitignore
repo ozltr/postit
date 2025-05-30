@@ -4,6 +4,8 @@ history/
 history_backup/
 history_expensive/
 parsed/
+parquets/
+*.parquet
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
